@@ -8,7 +8,6 @@ export type Cell = {
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
 export type PlayerState = {
-    socketId: string;
     snake: Cell[];
     direction: Direction;
     score: number;
@@ -20,5 +19,5 @@ export type GameState = {
 };
 
 export type WebSocketData = {
-    clientId: string;
+    id: string;
 };
