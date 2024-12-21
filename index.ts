@@ -1,4 +1,15 @@
-import type { Cell, Direction, GameState, WebSocketData } from './src/types/types';
+import {
+    PlayerState,
+    type Cell,
+    type Direction,
+    type GameState,
+    type JoinMessageData,
+    type Message,
+    type MessageType,
+    type MoveMessageData,
+    type StateUpdateMessageData,
+    type WebSocketData,
+} from './types';
 import type { ServerWebSocket } from 'bun';
 
 const gameTickInterval = 200;
@@ -21,7 +32,8 @@ class Game {
     }
 
     start() {
-        if (!this.timer) {
+        const alivePlayers = Array.from(this.state.players.values()).filter((player) => player.state === PlayerState.ALIVE);
+        if (!this.timer && alivePlayers.length > 0) {
             this.timer = setInterval(() => {
                 this.tick();
                 this.broadcast();
@@ -31,7 +43,8 @@ class Game {
     }
 
     stop() {
-        if (this.timer) {
+        const alivePlayers = Array.from(this.state.players.values()).filter((player) => player.state === PlayerState.ALIVE);
+        if (this.timer && alivePlayers.length === 0) {
             clearInterval(this.timer);
             this.timer = null;
             console.log('Game stopped');
@@ -39,33 +52,55 @@ class Game {
     }
 
     addPlayer(ws: ServerWebSocket<WebSocketData>) {
-        const initialPosition: Cell = { x: 10, y: 10 };
         this.state.players.set(ws, {
-            snake: [initialPosition],
+            name: undefined,
+            state: PlayerState.DEAD,
+            snake: [],
             direction: 'right',
             score: 0,
         });
-        ws.send(JSON.stringify({ type: 'init', food: this.state.food, snake: [initialPosition] }));
         console.log('Player added:', ws.data.id);
         this.start();
     }
 
     removePlayer(ws: ServerWebSocket<WebSocketData>) {
+        const player = this.state.players.get(ws);
         this.state.players.delete(ws);
 
         if (this.state.players.size === 0) {
             this.stop();
         }
 
-        console.log('Player removed:', ws.data.id);
+        console.log('Player removed:', ws.data.id, player?.name);
     }
 
     handleMessage(ws: ServerWebSocket<WebSocketData>, message: string) {
         const playerState = this.state.players.get(ws);
-        if (playerState && typeof message === 'string') {
-            const input = JSON.parse(message) as { type: string; direction: Direction };
-            if (input.type === 'direction' && this.isValidDirectionChange(playerState.direction, input.direction)) {
-                playerState.direction = input.direction;
+        if (!playerState) {
+            return;
+        }
+        const type = JSON.parse(message).type as MessageType;
+        switch (type) {
+            case 'join': {
+                const input = JSON.parse(message) as Message<JoinMessageData>;
+                playerState.name = input.data.username;
+                playerState.state = PlayerState.ALIVE;
+                playerState.snake = [{ x: 10, y: 10 }];
+                game.start();
+                break;
+            }
+            case 'leave': {
+                playerState.state = PlayerState.DEAD;
+                playerState.snake = [];
+                game.stop();
+                break;
+            }
+            case 'move': {
+                const input = JSON.parse(message) as Message<MoveMessageData>;
+                if (this.isValidDirectionChange(playerState.direction, input.data.direction)) {
+                    playerState.direction = input.data.direction;
+                }
+                break;
             }
         }
     }
@@ -84,73 +119,99 @@ class Game {
         const state = JSON.stringify({
             players: Array.from(this.state.players.entries()).map(([ws, player]) => ({
                 id: ws.data.id,
+                username: player.name,
+                state: player.state,
                 snake: player.snake,
                 score: player.score,
             })),
             food: this.state.food,
         });
 
+        const playerMessages = Array.from(this.state.players.entries()).map(([ws, player]) => ({
+            id: ws.data.id,
+            username: player.name,
+            state: player.state,
+            snake: player.snake,
+            score: player.score,
+        }));
+
         this.state.players.forEach((_, ws) => {
+            const message: Message<StateUpdateMessageData> = {
+                type: 'state-update',
+                data: {
+                    players: playerMessages,
+                    food: this.state.food,
+                },
+            };
+
             if (ws.readyState === 1) {
-                ws.send(state);
+                ws.send(JSON.stringify(message));
             }
         });
 
-        console.log('Broadcasted:', state);
+        console.log(
+            `Broadcasted to ${this.state.players.size} clients (Alive: ${
+                Array.from(this.state.players.values()).filter((p) => p.state === PlayerState.ALIVE).length
+            }, Dead: ${Array.from(this.state.players.values()).filter((p) => p.state === PlayerState.DEAD).length})`
+        );
     }
 
     tick() {
-        this.state.players.forEach((playerState) => {
-            const head = playerState.snake[0];
-            let newHead: Cell;
+        this.state.players
+            .entries()
+            .map(([_, player]) => player)
+            .filter((p) => p.state === PlayerState.ALIVE)
+            .forEach((player) => {
+                const head = player.snake[0];
+                let newHead: Cell;
 
-            // Calculate the new head position
-            switch (playerState.direction) {
-                case 'up':
-                    newHead = { x: head.x - 1, y: head.y };
-                    break;
-                case 'down':
-                    newHead = { x: head.x + 1, y: head.y };
-                    break;
-                case 'left':
-                    newHead = { x: head.x, y: head.y - 1 };
-                    break;
-                case 'right':
-                    newHead = { x: head.x, y: head.y + 1 };
-                    break;
-            }
+                // Calculate the new head position
+                switch (player.direction) {
+                    case 'up':
+                        newHead = { x: head.x - 1, y: head.y };
+                        break;
+                    case 'down':
+                        newHead = { x: head.x + 1, y: head.y };
+                        break;
+                    case 'left':
+                        newHead = { x: head.x, y: head.y - 1 };
+                        break;
+                    case 'right':
+                        newHead = { x: head.x, y: head.y + 1 };
+                        break;
+                }
 
-            // Check collisions
-            const collisionWithPlayer =
-                this.state.players.size > 1 &&
-                Array.from(this.state.players.values()).some((otherPlayer) => {
-                    return otherPlayer.snake.some((cell) => cell.x === newHead.x && cell.y === newHead.y);
-                });
+                // Check collisions
+                const collisionWithPlayer =
+                    this.state.players.size > 1 &&
+                    Array.from(this.state.players.values()).some((otherPlayer) => {
+                        return otherPlayer.snake.some((cell) => cell.x === newHead.x && cell.y === newHead.y);
+                    });
 
-            const outOfBounds = newHead.x < 0 || newHead.y < 0 || newHead.x >= 20 || newHead.y >= 20;
-            if (collisionWithPlayer || outOfBounds) {
-                playerState.snake = [{ x: 10, y: 10 }];
-                do {
-                    playerState.snake[0] = {
-                        x: Math.floor(Math.random() * 18) + 1,
-                        y: Math.floor(Math.random() * 18) + 1,
-                    };
-                } while (playerState.snake[0].x === 0 || playerState.snake[0].y === 0 || playerState.snake[0].x === 19 || playerState.snake[0].y === 19);
-                playerState.score = 0;
-                playerState.direction = ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)] as Direction;
-                return;
-            }
+                const outOfBounds = newHead.x < 0 || newHead.y < 0 || newHead.x >= 20 || newHead.y >= 20;
+                if (collisionWithPlayer || outOfBounds) {
+                    player.snake = [{ x: 10, y: 10 }];
+                    do {
+                        player.snake[0] = {
+                            x: Math.floor(Math.random() * 18) + 1,
+                            y: Math.floor(Math.random() * 18) + 1,
+                        };
+                    } while (player.snake[0].x === 0 || player.snake[0].y === 0 || player.snake[0].x === 19 || player.snake[0].y === 19);
+                    player.score = 0;
+                    player.direction = ['up', 'down', 'left', 'right'][Math.floor(Math.random() * 4)] as Direction;
+                    return;
+                }
 
-            // Update snake position
-            playerState.snake.unshift(newHead);
+                // Update snake position
+                player.snake.unshift(newHead);
 
-            if (newHead.x === this.state.food.x && newHead.y === this.state.food.y) {
-                playerState.score++;
-                this.state.food = this.spawnFood();
-            } else {
-                playerState.snake.pop();
-            }
-        });
+                if (newHead.x === this.state.food.x && newHead.y === this.state.food.y) {
+                    player.score++;
+                    this.state.food = this.spawnFood();
+                } else {
+                    player.snake.pop();
+                }
+            });
     }
 
     spawnFood() {
@@ -181,7 +242,7 @@ Bun.serve({
         open(ws: ServerWebSocket<WebSocketData>) {
             game.addPlayer(ws);
         },
-        message(ws: ServerWebSocket<WebSocketData>, message) {
+        message(ws: ServerWebSocket<WebSocketData>, message: string | Buffer) {
             if (typeof message === 'string') {
                 game.handleMessage(ws, message);
             } else {
