@@ -47,6 +47,7 @@ class Game {
         if (this.timer && alivePlayers.length === 0) {
             clearInterval(this.timer);
             this.timer = null;
+            this.broadcast();
             console.log('Game stopped');
         }
     }
@@ -116,17 +117,6 @@ class Game {
     }
 
     broadcast() {
-        const state = JSON.stringify({
-            players: Array.from(this.state.players.entries()).map(([ws, player]) => ({
-                id: ws.data.id,
-                username: player.name,
-                state: player.state,
-                snake: player.snake,
-                score: player.score,
-            })),
-            food: this.state.food,
-        });
-
         const playerMessages = Array.from(this.state.players.entries()).map(([ws, player]) => ({
             id: ws.data.id,
             username: player.name,
