@@ -218,6 +218,10 @@ const game = new Game(20, gameTickInterval);
 Bun.serve({
     fetch(req, server) {
         const url = new URL(req.url);
+        if (url.pathname === '/healthcheck') {
+            return new Response('OK', { status: 200 });
+        }
+
         const id = url.searchParams.get('id');
         if (!id) {
             return new Response('Client ID not found', { status: 400 });
